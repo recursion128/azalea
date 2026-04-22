@@ -224,25 +224,33 @@ impl ItemStackData {
 
 impl AzBuf for ItemStack {
     fn azalea_read(buf: &mut Cursor<&[u8]>) -> Result<Self, BufReadError> {
-        let count = i32::azalea_read_var(buf)?;
-        if count <= 0 {
-            Ok(ItemStack::Empty)
-        } else {
-            let kind = ItemKind::azalea_read(buf)?;
-            let component_patch = DataComponentPatch::azalea_read(buf)?;
-            Ok(ItemStack::from(ItemStackData {
-                count,
-                kind,
-                component_patch,
-            }))
+        // MC 26.1 (1.21.5+) wire format: `item_id: VarInt, count: VarInt, components`.
+        // `item_id == 0` (= Air) is the Empty marker (see `ItemStack.OPTIONAL_STREAM_CODEC`
+        // in the Java server, which reads `Holder<Item>` first and returns EMPTY when it
+        // resolves to `Items.AIR`). `Item.STREAM_CODEC` writes the registry id directly
+        // as a VarInt (no `Holder::Reference(id+1)` shift — items always reference the
+        // registry, never a direct payload).
+        let kind = ItemKind::azalea_read(buf)?;
+        if kind == ItemKind::Air {
+            return Ok(ItemStack::Empty);
         }
+        let count = i32::azalea_read_var(buf)?;
+        let component_patch = DataComponentPatch::azalea_read(buf)?;
+        Ok(ItemStack::from(ItemStackData {
+            count,
+            kind,
+            component_patch,
+        }))
     }
     fn azalea_write(&self, buf: &mut impl Write) -> io::Result<()> {
         match self {
-            ItemStack::Empty => 0_i32.azalea_write_var(buf)?,
+            ItemStack::Empty => {
+                // Air id = 0 = Empty marker; writes a single 0 byte varint.
+                ItemKind::Air.azalea_write(buf)?;
+            }
             ItemStack::Present(i) => {
-                i.count.azalea_write_var(buf)?;
                 i.kind.azalea_write(buf)?;
+                i.count.azalea_write_var(buf)?;
                 i.component_patch.azalea_write(buf)?;
             }
         };
