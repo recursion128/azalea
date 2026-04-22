@@ -126,7 +126,7 @@ pub enum Particle {
     OminousSpawning,
     RaidOmen,
     TrialOmen,
-    BlockCrumble,
+    BlockCrumble(BlockParticle),
     Firefly,
 }
 
@@ -253,7 +253,7 @@ impl From<ParticleKind> for Particle {
             ParticleKind::RaidOmen => Self::RaidOmen,
             ParticleKind::TrialOmen => Self::TrialOmen,
             ParticleKind::Trail => Self::Trail,
-            ParticleKind::BlockCrumble => Self::BlockCrumble,
+            ParticleKind::BlockCrumble => Self::BlockCrumble(BlockParticle::default()),
             ParticleKind::Firefly => Self::Firefly,
             ParticleKind::CopperFireFlame => Self::CopperFireFlame,
             ParticleKind::PauseMobGrowth => Self::PauseMobGrowth,
