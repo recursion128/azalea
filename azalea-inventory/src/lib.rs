@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![feature(min_specialization)]
 
+pub mod block_entity_data;
 pub mod components;
 pub mod default_components;
 pub mod item;

@@ -1120,7 +1120,9 @@ impl GamePacketHandler<'_> {
 
     pub fn block_destruction(&mut self, _p: &ClientboundBlockDestruction) {}
 
-    pub fn block_entity_data(&mut self, _p: &ClientboundBlockEntityData) {}
+    pub fn block_entity_data(&mut self, p: &ClientboundBlockEntityData) {
+        crate::plugins::block_entity::apply_block_entity_data(self.ecs, self.player, p);
+    }
 
     pub fn block_event(&mut self, p: &ClientboundBlockEvent) {
         debug!("Got block event packet {p:?}");
