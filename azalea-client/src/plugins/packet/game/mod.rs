@@ -1126,6 +1126,7 @@ impl GamePacketHandler<'_> {
 
     pub fn block_event(&mut self, p: &ClientboundBlockEvent) {
         debug!("Got block event packet {p:?}");
+        crate::plugins::block_event::apply_block_event(self.ecs, self.player, p);
     }
 
     pub fn boss_event(&mut self, _p: &ClientboundBossEvent) {}
