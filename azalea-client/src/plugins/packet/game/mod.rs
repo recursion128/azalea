@@ -1210,7 +1210,9 @@ impl GamePacketHandler<'_> {
         crate::plugins::block_event::apply_block_event(self.ecs, self.player, p);
     }
 
-    pub fn boss_event(&mut self, _p: &ClientboundBossEvent) {}
+    pub fn boss_event(&mut self, p: &ClientboundBossEvent) {
+        crate::plugins::boss_bar::apply_boss_event(self.ecs, self.player, p);
+    }
 
     pub fn command_suggestions(&mut self, _p: &ClientboundCommandSuggestions) {}
 
@@ -1640,13 +1642,19 @@ impl GamePacketHandler<'_> {
     pub fn set_border_warning_delay(&mut self, _p: &ClientboundSetBorderWarningDelay) {}
     pub fn set_border_warning_distance(&mut self, _p: &ClientboundSetBorderWarningDistance) {}
     pub fn set_camera(&mut self, _p: &ClientboundSetCamera) {}
-    pub fn set_display_objective(&mut self, _p: &ClientboundSetDisplayObjective) {}
-    pub fn set_objective(&mut self, _p: &ClientboundSetObjective) {}
+    pub fn set_display_objective(&mut self, p: &ClientboundSetDisplayObjective) {
+        crate::plugins::scoreboard::apply_set_display_objective(self.ecs, self.player, p);
+    }
+    pub fn set_objective(&mut self, p: &ClientboundSetObjective) {
+        crate::plugins::scoreboard::apply_set_objective(self.ecs, self.player, p);
+    }
     pub fn set_passengers(&mut self, _p: &ClientboundSetPassengers) {}
     pub fn set_player_team(&mut self, p: &ClientboundSetPlayerTeam) {
         debug!("Got set player team packet {p:?}");
     }
-    pub fn set_score(&mut self, _p: &ClientboundSetScore) {}
+    pub fn set_score(&mut self, p: &ClientboundSetScore) {
+        crate::plugins::scoreboard::apply_set_score(self.ecs, self.player, p);
+    }
     pub fn set_simulation_distance(&mut self, _p: &ClientboundSetSimulationDistance) {}
     pub fn set_subtitle_text(&mut self, _p: &ClientboundSetSubtitleText) {}
     pub fn set_title_text(&mut self, _p: &ClientboundSetTitleText) {}
@@ -1662,7 +1670,9 @@ impl GamePacketHandler<'_> {
     pub fn hurt_animation(&mut self, _p: &ClientboundHurtAnimation) {}
     pub fn ticking_state(&mut self, _p: &ClientboundTickingState) {}
     pub fn ticking_step(&mut self, _p: &ClientboundTickingStep) {}
-    pub fn reset_score(&mut self, _p: &ClientboundResetScore) {}
+    pub fn reset_score(&mut self, p: &ClientboundResetScore) {
+        crate::plugins::scoreboard::apply_reset_score(self.ecs, self.player, p);
+    }
     pub fn cookie_request(&mut self, p: &ClientboundCookieRequest) {
         debug!("Got cookie request packet {p:?}");
         as_system::<Commands>(self.ecs, |mut commands| {

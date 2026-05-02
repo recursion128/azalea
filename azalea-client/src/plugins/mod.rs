@@ -4,6 +4,7 @@ pub mod attack;
 pub mod block_entity;
 pub mod block_event;
 pub mod block_update;
+pub mod boss_bar;
 pub mod brand;
 #[cfg(feature = "online-mode")]
 pub mod chat_signing;
@@ -23,6 +24,7 @@ pub mod movement;
 pub mod packet;
 pub mod pong;
 pub mod respawn;
+pub mod scoreboard;
 pub mod task_pool;
 pub mod tick_counter;
 pub mod tick_end;
@@ -54,6 +56,8 @@ impl PluginGroup for DefaultPlugins {
             .add(block_entity::BlockEntityPlugin)
             .add(block_event::BlockEventPlugin)
             .add(block_update::BlockUpdatePlugin)
+            .add(boss_bar::BossBarPlugin)
+            .add(scoreboard::ScoreboardPlugin)
             .add(tick_end::TickEndPlugin)
             .add(loading::PlayerLoadedPlugin)
             .add(brand::BrandPlugin)

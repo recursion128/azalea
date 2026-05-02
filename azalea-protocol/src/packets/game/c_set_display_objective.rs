@@ -7,7 +7,7 @@ pub struct ClientboundSetDisplayObjective {
     pub objective_name: String,
 }
 
-#[derive(AzBuf, Clone, Copy, Debug, PartialEq)]
+#[derive(AzBuf, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DisplaySlot {
     List = 0,
     Sidebar,
