@@ -4,7 +4,7 @@ use azalea_entity::inventory::Inventory;
 use azalea_inventory::ItemStack;
 use azalea_protocol::packets::{
     ConnectionProtocol,
-    game::{ClientboundOpenScreen, ClientboundSetPlayerInventory},
+    game::{ClientboundContainerClose, ClientboundOpenScreen, ClientboundSetPlayerInventory},
 };
 use azalea_registry::builtin::{ItemKind, MenuKind};
 
@@ -117,4 +117,53 @@ fn test_set_player_inventory() {
         contents: ItemStack::new(ItemKind::Stone, 1),
     });
     s.tick();
+}
+
+/// Regression for the close-container path: when a container is open,
+/// `SetPlayerInventory` writes for hotbar / storage must mirror into the
+/// container menu so closing the container (which copies its
+/// `player_slots_range` back into `inventory_menu`) doesn't clobber the
+/// update with a stale value.
+#[test]
+fn test_set_player_inventory_survives_container_close() {
+    let _lock = init();
+
+    let mut s = Simulation::new(ConnectionProtocol::Game);
+    s.receive_packet(default_login_packet());
+    s.tick();
+
+    s.receive_packet(ClientboundOpenScreen {
+        container_id: 1,
+        menu_type: MenuKind::Generic9x3,
+        title: FormattedText::default(),
+    });
+    s.tick();
+
+    let stone = ItemStack::new(ItemKind::Stone, 32);
+    let iron = ItemStack::new(ItemKind::IronIngot, 4);
+    // storage slot 9 (vanilla) -> menu protocol index 9
+    s.receive_packet(ClientboundSetPlayerInventory {
+        slot: 9,
+        contents: stone.clone(),
+    });
+    // hotbar slot 0 (vanilla) -> menu protocol index 36
+    s.receive_packet(ClientboundSetPlayerInventory {
+        slot: 0,
+        contents: iron.clone(),
+    });
+    s.tick();
+
+    // close the container; vanilla copies container.player_slots_range
+    // back into inventory_menu, so without the mirror the writes above
+    // would be lost.
+    s.receive_packet(ClientboundContainerClose { container_id: 1 });
+    s.tick();
+
+    s.with_component(|inv: &Inventory| {
+        assert!(inv.container_menu.is_none());
+        assert_eq!(inv.id, 0);
+        assert_eq!(inv.inventory_menu.slot(9), Some(&stone));
+        assert_eq!(inv.inventory_menu.slot(36), Some(&iron));
+        assert_eq!(inv.held_item(), &iron);
+    });
 }
