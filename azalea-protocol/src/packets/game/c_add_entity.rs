@@ -33,11 +33,25 @@ pub struct ClientboundAddEntity {
 impl ClientboundAddEntity {
     /// Make the entity into a bundle that can be inserted into the ECS.
     ///
+    /// The packet's `y_head_rot` / `x_rot` seeds the entity's initial
+    /// [`azalea_entity::LookDirection`] — head yaw goes to `y_rot` and the
+    /// pitch goes to `x_rot`. The packet also carries a separate body
+    /// `y_rot`, but azalea's `LookDirection` does not yet split body / head
+    /// yaw, so it's currently ignored (head yaw matches what
+    /// `ClientboundRotateHead` would later overwrite anyway).
+    ///
     /// You must apply the metadata after inserting the bundle with
     /// [`Self::apply_metadata`].
     #[cfg(feature = "bevy_ecs")]
     pub fn as_entity_bundle(&self, world_name: WorldName) -> azalea_entity::EntityBundle {
-        azalea_entity::EntityBundle::new(self.uuid, self.position, self.entity_type, world_name)
+        let look = azalea_entity::LookDirection::new(
+            (self.y_head_rot as i32 * 360) as f32 / 256.,
+            (self.x_rot as i32 * 360) as f32 / 256.,
+        );
+        let mut bundle =
+            azalea_entity::EntityBundle::new(self.uuid, self.position, self.entity_type, world_name);
+        bundle.direction = look;
+        bundle
     }
 
     /// Apply the default metadata for the given entity.
