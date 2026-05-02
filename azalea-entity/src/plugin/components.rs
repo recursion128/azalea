@@ -120,6 +120,35 @@ pub struct Leashable {
     pub holder: Option<MinecraftEntityId>,
 }
 
+/// The owning entity of a projectile / fishing bobber, populated from the
+/// `data` field of `ClientboundAddEntity`.
+///
+/// For fishing bobbers (`FishingBobber`) the owner is the player whose rod
+/// cast the bobber — vanilla uses this id (not [`crate::metadata::HookedEntity`])
+/// to draw the line between the rod tip and the bobber. `HookedEntity` is the
+/// other side of the line: whatever the bobber has snagged (a fish item, a
+/// mob, …) and is sent later via `ClientboundSetEntityData` metadata.
+///
+/// `None` means the spawn packet's `data` field was non-positive (`<= 0`),
+/// which vanilla treats as "no owner" — typically when the projectile was
+/// spawned by `/summon` or another world-side trigger rather than by an
+/// entity. The component is only inserted for entity kinds whose
+/// [object data](https://minecraft.wiki/w/Java_Edition_protocol/Object_data)
+/// is documented as an owning entity id, currently:
+/// `FishingBobber`, `Snowball`, `Egg`, `EnderPearl`, `ExperienceBottle`,
+/// `SplashPotion`, `LingeringPotion`, `Arrow`, `SpectralArrow`, `Trident`.
+/// Other projectile-shaped kinds (`ShulkerBullet`, `LlamaSpit`, …) overload
+/// `data` differently and are intentionally not in the allowlist.
+///
+/// As with [`Leashable`] the value is stored as a raw [`MinecraftEntityId`]
+/// (not an ECS [`Entity`]) because the owner may not yet be in the local
+/// [`crate::indexing::EntityIdIndex`] at spawn time, and the same id may map
+/// to different ECS entities across clients in a swarm.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProjectileOwner {
+    pub owner: Option<MinecraftEntityId>,
+}
+
 /// Marker component for entities that are dead.
 ///
 /// "Dead" means that the entity has 0 health.

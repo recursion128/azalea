@@ -10,7 +10,7 @@ use azalea_core::{
 };
 use azalea_entity::{
     Dead, EntityBundle, EntityEquipment, EntityKindComponent, HasClientLoaded, Leashable,
-    LoadedBy, LocalEntity, LookDirection, Physics, PlayerAbilities, Position,
+    LoadedBy, LocalEntity, LookDirection, Physics, PlayerAbilities, Position, ProjectileOwner,
     effect_events::{AddEffectEvent, RemoveEffectsEvent},
     indexing::{EntityIdIndex, EntityUuidIndex},
     inventory::Inventory,
@@ -658,6 +658,35 @@ impl GamePacketHandler<'_> {
                 // the bundle doesn't include the default entity metadata so we add that
                 // separately
                 p.apply_metadata(&mut spawned);
+
+                // ClientboundAddEntity.data is overloaded per entity kind. For
+                // projectiles below it carries the owning entity id (the
+                // shooter / thrower). Vanilla uses it e.g. to draw the
+                // fishing line and to attribute kills; the bbb client uses
+                // it for fishing line rendering today, but we wire all the
+                // projectile kinds whose `data` slot is unambiguously an
+                // owner id so consumers don't have to guess. See
+                // https://minecraft.wiki/w/Java_Edition_protocol/Object_data
+                if matches!(
+                    p.entity_type,
+                    EntityKind::FishingBobber
+                        | EntityKind::Snowball
+                        | EntityKind::Egg
+                        | EntityKind::EnderPearl
+                        | EntityKind::ExperienceBottle
+                        | EntityKind::SplashPotion
+                        | EntityKind::LingeringPotion
+                        | EntityKind::Arrow
+                        | EntityKind::SpectralArrow
+                        | EntityKind::Trident
+                ) {
+                    let owner = if p.data > 0 {
+                        Some(MinecraftEntityId(p.data))
+                    } else {
+                        None
+                    };
+                    spawned.insert(ProjectileOwner { owner });
+                }
             },
         );
     }
