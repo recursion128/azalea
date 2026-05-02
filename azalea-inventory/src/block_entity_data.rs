@@ -20,6 +20,15 @@
 //! - **Skull**：profile name / uuid / texture URL（从 `properties[name=textures]`
 //!   的 base64-JSON 解出 `textures.SKIN.url`）+ `note_block_sound`。
 //! - **Bell**：仅 `CustomName`（铃响动画走 `BlockEvent` 包，不在 NBT）。
+//! - **Lectern**：`Book` 单 ItemStack（id + count，components 同样略）+ `Page`
+//!   (i32) + `HasBook` (bool)。
+//! - **BrewingStand**：3 槽 `Items`（同 chest item 结构，slot 0..2）+ `BrewTime`
+//!   (i16) + `Fuel` (i8) + `CustomName`。
+//! - **EndPortal**：vanilla `saveAdditional` 不写任何字段，但 BE 仍然存在——
+//!   保留空 variant 让 visual 占位能 spawn。
+//! - **ShulkerBox**：27 槽 `Items` + 可选 `Color` (byte 0..15 → DyeColor) +
+//!   `CustomName`。注意 vanilla server 默认不把 color 写进 NBT（颜色由 block id
+//!   编码），field 不在时 `color` 为 `None`。
 //! - **其它 30+ kind**：[`BlockEntityData::Unknown`]，下游自己决定是否 walk
 //!   原 NBT。
 //!
@@ -50,6 +59,12 @@ pub enum BlockEntityData {
     Banner(BannerData),
     Skull(SkullData),
     Bell(BellData),
+    Lectern(LecternData),
+    BrewingStand(BrewingStandData),
+    /// vanilla `saveAdditional` 不写任何字段；保留 marker variant 让 visual /
+    /// 粒子占位下游仍能区分"end_portal BE 在"和"无 BE"。
+    EndPortal,
+    ShulkerBox(ShulkerBoxData),
     /// kind 未在解码表里，或 NBT 解码失败。`kind` 仍给下游让它知道是个什么。
     Unknown { kind: BlockEntityKind },
 }
@@ -109,6 +124,11 @@ impl BlockEntityData {
             BlockEntityKind::Banner => decode!(BannerData, Banner),
             BlockEntityKind::Skull => decode!(SkullData, Skull),
             BlockEntityKind::Bell => decode!(BellData, Bell),
+            BlockEntityKind::Lectern => decode!(LecternData, Lectern),
+            BlockEntityKind::BrewingStand => decode!(BrewingStandData, BrewingStand),
+            // EndPortal NBT 永远是空 compound，没有要解的字段——直接给 marker。
+            BlockEntityKind::EndPortal => Self::EndPortal,
+            BlockEntityKind::ShulkerBox => decode!(ShulkerBoxData, ShulkerBox),
             _ => Self::Unknown { kind },
         }
     }
@@ -126,6 +146,10 @@ impl BlockEntityData {
             BlockEntityKind::Banner => Self::Banner(BannerData::default()),
             BlockEntityKind::Skull => Self::Skull(SkullData::default()),
             BlockEntityKind::Bell => Self::Bell(BellData::default()),
+            BlockEntityKind::Lectern => Self::Lectern(LecternData::default()),
+            BlockEntityKind::BrewingStand => Self::BrewingStand(BrewingStandData::default()),
+            BlockEntityKind::EndPortal => Self::EndPortal,
+            BlockEntityKind::ShulkerBox => Self::ShulkerBox(ShulkerBoxData::default()),
             _ => Self::Unknown { kind },
         }
     }
@@ -142,6 +166,10 @@ impl BlockEntityData {
             Self::Banner(_) => BlockEntityKind::Banner,
             Self::Skull(_) => BlockEntityKind::Skull,
             Self::Bell(_) => BlockEntityKind::Bell,
+            Self::Lectern(_) => BlockEntityKind::Lectern,
+            Self::BrewingStand(_) => BlockEntityKind::BrewingStand,
+            Self::EndPortal => BlockEntityKind::EndPortal,
+            Self::ShulkerBox(_) => BlockEntityKind::ShulkerBox,
             Self::Unknown { kind } => *kind,
         }
     }
@@ -422,6 +450,83 @@ pub struct BellData {
     pub custom_name: Option<FormattedText>,
 }
 
+// ---- Lectern --------------------------------------------------------------
+
+/// Lectern 的 vanilla NBT schema（1.20+）：
+/// ```text
+/// {
+///   "Book"?: { "id": "minecraft:written_book", "count": int, "components"?: ... },
+///   "Page"?: int,
+///   "HasBook"?: byte,
+/// }
+/// ```
+/// `Book` 缺失视为没书；`Page` / `HasBook` 缺失分别给 0 / false 默认值——
+/// vanilla 客户端渲染时也是这样兜底。`Book.components` 的书页文本规模大，
+/// 与 chest 同样先丢，下游想读 `written_book_content` 走 component 系统。
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct LecternData {
+    #[simdnbt(rename = "Book")]
+    pub book: Option<ChestItem>,
+    #[simdnbt(rename = "Page")]
+    pub page: Option<i32>,
+    #[simdnbt(rename = "HasBook")]
+    pub has_book: Option<bool>,
+}
+
+// ---- BrewingStand ---------------------------------------------------------
+
+/// BrewingStand 的 vanilla NBT schema：
+/// ```text
+/// {
+///   "Items": [{ "Slot": byte (0..=2 → 3 瓶 + 1 燃料 + 1 配料), "id": ..., "count": int }, ...],
+///   "BrewTime"?: short,
+///   "Fuel"?: byte,
+///   "CustomName"?: chat component,
+/// }
+/// ```
+/// 槽位含义按 vanilla：0..2 = 三瓶位、3 = 配料、4 = blaze powder。
+/// `BrewTime` (i16) 是当前酿造剩余 tick；`Fuel` (i8) 是 blaze powder 燃料计数
+/// （0..20）。两者缺失时按 vanilla 默认 0。
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct BrewingStandData {
+    #[simdnbt(rename = "Items")]
+    pub items: Option<Vec<ChestItem>>,
+    #[simdnbt(rename = "BrewTime")]
+    pub brew_time: Option<i16>,
+    #[simdnbt(rename = "Fuel")]
+    pub fuel: Option<i8>,
+    #[simdnbt(rename = "CustomName")]
+    pub custom_name: Option<FormattedText>,
+}
+
+// ---- ShulkerBox -----------------------------------------------------------
+
+/// ShulkerBox 的 vanilla NBT schema：
+/// ```text
+/// {
+///   "Items": [{ "Slot": byte (0..27), "id": ..., "count": int }, ...],
+///   "CustomName"?: chat component,
+///   "Lock"?: string | component,
+/// }
+/// ```
+/// 颜色不在 NBT 里——vanilla 用 17 种 block id 编码（`white_shulker_box` … +
+/// 无色 `shulker_box`）。这里仍保留可选 `color` 字段：部分 datapack / mod 会
+/// 把 dye color 写进 BE NBT 的 `Color` byte（0..15）；缺失时 `color = None`，
+/// 渲染端按 block id 决定颜色即可。
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct ShulkerBoxData {
+    #[simdnbt(rename = "Items")]
+    pub items: Option<Vec<ChestItem>>,
+    #[simdnbt(rename = "CustomName")]
+    pub custom_name: Option<FormattedText>,
+    #[simdnbt(rename = "Lock")]
+    pub lock: Option<FormattedText>,
+    /// 0..15 dye index（`DyeColor as u8` 排序：white=0、orange=1、… black=15）。
+    /// vanilla server 一般不写，留 None；下游想要 `DyeColor` 自己 cast。
+    #[simdnbt(rename = "Color")]
+    pub color: Option<u8>,
+}
+
 // ---- Tests ----------------------------------------------------------------
 
 #[cfg(test)]
@@ -613,6 +718,130 @@ mod tests {
         };
         let name = bell.custom_name.expect("custom name decoded");
         assert_eq!(name.to_string(), "Liberty Bell");
+    }
+
+    #[test]
+    fn decode_lectern_with_book() {
+        let mut book = NbtCompound::new();
+        book.insert("id", NbtTag::String("minecraft:written_book".into()));
+        book.insert("count", NbtTag::Int(1));
+        book.insert("Slot", NbtTag::Byte(0));
+
+        let mut compound = NbtCompound::new();
+        compound.insert("Book", NbtTag::Compound(book));
+        compound.insert("Page", NbtTag::Int(7));
+        compound.insert("HasBook", NbtTag::Byte(1));
+
+        let nbt = wrap(compound);
+        let decoded = BlockEntityData::from_nbt(BlockEntityKind::Lectern, &nbt);
+        let BlockEntityData::Lectern(lectern) = decoded else {
+            panic!("expected Lectern, got {decoded:?}");
+        };
+        let book = lectern.book.expect("book decoded");
+        assert_eq!(book.id.to_string(), "minecraft:written_book");
+        assert_eq!(book.count, 1);
+        assert_eq!(lectern.page, Some(7));
+        assert_eq!(lectern.has_book, Some(true));
+    }
+
+    #[test]
+    fn decode_lectern_empty_has_no_book() {
+        let decoded = BlockEntityData::from_nbt(BlockEntityKind::Lectern, &Nbt::None);
+        let BlockEntityData::Lectern(lectern) = decoded else {
+            panic!("expected Lectern, got {decoded:?}");
+        };
+        assert!(lectern.book.is_none());
+        assert_eq!(lectern.page, None);
+        assert_eq!(lectern.has_book, None);
+    }
+
+    #[test]
+    fn decode_brewing_stand_items_and_progress() {
+        let mut bottle = NbtCompound::new();
+        bottle.insert("Slot", NbtTag::Byte(0));
+        bottle.insert("id", NbtTag::String("minecraft:potion".into()));
+        bottle.insert("count", NbtTag::Int(1));
+
+        let mut ingredient = NbtCompound::new();
+        ingredient.insert("Slot", NbtTag::Byte(3));
+        ingredient.insert("id", NbtTag::String("minecraft:nether_wart".into()));
+        ingredient.insert("count", NbtTag::Int(2));
+
+        let mut fuel = NbtCompound::new();
+        fuel.insert("Slot", NbtTag::Byte(4));
+        fuel.insert("id", NbtTag::String("minecraft:blaze_powder".into()));
+        fuel.insert("count", NbtTag::Int(20));
+
+        let mut compound = NbtCompound::new();
+        compound.insert(
+            "Items",
+            NbtTag::List(NbtList::Compound(vec![bottle, ingredient, fuel])),
+        );
+        compound.insert("BrewTime", NbtTag::Short(123));
+        compound.insert("Fuel", NbtTag::Byte(15));
+
+        let nbt = wrap(compound);
+        let decoded = BlockEntityData::from_nbt(BlockEntityKind::BrewingStand, &nbt);
+        let BlockEntityData::BrewingStand(stand) = decoded else {
+            panic!("expected BrewingStand, got {decoded:?}");
+        };
+        let items = stand.items.expect("items decoded");
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].slot, 0);
+        assert_eq!(items[0].id.to_string(), "minecraft:potion");
+        assert_eq!(items[1].slot, 3);
+        assert_eq!(items[2].id.to_string(), "minecraft:blaze_powder");
+        assert_eq!(stand.brew_time, Some(123));
+        assert_eq!(stand.fuel, Some(15));
+        assert!(stand.custom_name.is_none());
+    }
+
+    #[test]
+    fn decode_end_portal_is_marker() {
+        // vanilla 端口实体 NBT 通常就是空 compound。
+        let nbt = wrap(NbtCompound::new());
+        let decoded = BlockEntityData::from_nbt(BlockEntityKind::EndPortal, &nbt);
+        assert_eq!(decoded, BlockEntityData::EndPortal);
+        assert_eq!(decoded.kind(), BlockEntityKind::EndPortal);
+
+        // Nbt::None 也走 marker path。
+        let decoded2 = BlockEntityData::from_nbt(BlockEntityKind::EndPortal, &Nbt::None);
+        assert_eq!(decoded2, BlockEntityData::EndPortal);
+    }
+
+    #[test]
+    fn decode_shulker_box_items_and_color() {
+        let mut item0 = NbtCompound::new();
+        item0.insert("Slot", NbtTag::Byte(0));
+        item0.insert("id", NbtTag::String("minecraft:redstone".into()));
+        item0.insert("count", NbtTag::Int(64));
+
+        let mut compound = NbtCompound::new();
+        compound.insert("Items", NbtTag::List(NbtList::Compound(vec![item0])));
+        // 14 = red（白=0…黑=15，按 DyeColor enum 排序）。
+        compound.insert("Color", NbtTag::Byte(14));
+
+        let nbt = wrap(compound);
+        let decoded = BlockEntityData::from_nbt(BlockEntityKind::ShulkerBox, &nbt);
+        let BlockEntityData::ShulkerBox(shulker) = decoded else {
+            panic!("expected ShulkerBox, got {decoded:?}");
+        };
+        let items = shulker.items.expect("items decoded");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id.to_string(), "minecraft:redstone");
+        assert_eq!(shulker.color, Some(14));
+    }
+
+    #[test]
+    fn decode_shulker_box_without_color() {
+        // vanilla server 不写 Color；color 应当为 None，渲染端按 block id 决定。
+        let nbt = wrap(NbtCompound::new());
+        let decoded = BlockEntityData::from_nbt(BlockEntityKind::ShulkerBox, &nbt);
+        let BlockEntityData::ShulkerBox(shulker) = decoded else {
+            panic!("expected ShulkerBox, got {decoded:?}");
+        };
+        assert!(shulker.items.is_none());
+        assert!(shulker.color.is_none());
     }
 
     #[test]
