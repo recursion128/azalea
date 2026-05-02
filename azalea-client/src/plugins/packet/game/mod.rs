@@ -846,7 +846,35 @@ impl GamePacketHandler<'_> {
         debug!("Got update advancements packet {p:?}");
     }
 
-    pub fn rotate_head(&mut self, _p: &ClientboundRotateHead) {}
+    pub fn rotate_head(&mut self, p: &ClientboundRotateHead) {
+        as_system::<(Query<&EntityIdIndex>, Query<&mut LookDirection>)>(
+            self.ecs,
+            |(player_query, mut look_query)| {
+                let entity_id_index = player_query.get(self.player).unwrap();
+                let Some(entity) = entity_id_index.get_by_minecraft_entity(p.entity_id) else {
+                    debug!(
+                        "Got rotate head packet for unknown entity id {}",
+                        p.entity_id
+                    );
+                    return;
+                };
+                let Ok(mut look_direction) = look_query.get_mut(entity) else {
+                    debug!(
+                        "Got rotate head packet for entity with no LookDirection {}",
+                        p.entity_id
+                    );
+                    return;
+                };
+                // azalea's `LookDirection` doesn't yet split body / head yaw,
+                // so we just write head_yaw to y_rot (and leave x_rot alone).
+                let new_y_rot = (p.y_head_rot as i32 * 360) as f32 / 256.;
+                let new_look = LookDirection::new(new_y_rot, look_direction.x_rot());
+                if new_look != *look_direction {
+                    *look_direction = new_look;
+                }
+            },
+        );
+    }
 
     pub fn move_entity_pos(&mut self, p: &ClientboundMoveEntityPos) {
         as_system::<(
