@@ -9,8 +9,8 @@ use azalea_core::{
     position::{ChunkPos, Vec3},
 };
 use azalea_entity::{
-    Dead, EntityBundle, EntityKindComponent, HasClientLoaded, LoadedBy, LocalEntity, LookDirection,
-    Physics, PlayerAbilities, Position,
+    Dead, EntityBundle, EntityEquipment, EntityKindComponent, HasClientLoaded, LoadedBy,
+    LocalEntity, LookDirection, Physics, PlayerAbilities, Position,
     effect_events::{AddEffectEvent, RemoveEffectsEvent},
     indexing::{EntityIdIndex, EntityUuidIndex},
     inventory::Inventory,
@@ -1068,6 +1068,59 @@ impl GamePacketHandler<'_> {
 
     pub fn set_equipment(&mut self, p: &ClientboundSetEquipment) {
         debug!("Got set equipment packet {p:?}");
+
+        as_system::<(Commands, Query<&EntityIdIndex>)>(self.ecs, |(mut commands, query)| {
+            let entity_id_index = query.get(self.player).unwrap();
+
+            let Some(entity) = entity_id_index.get_by_minecraft_entity(p.entity_id) else {
+                debug!(
+                    "Got set equipment packet for unknown entity id {}",
+                    p.entity_id
+                );
+                return;
+            };
+
+            let slots = p.slots.slots.clone();
+            let local_player = self.player;
+            commands.queue(move |world: &mut World| {
+                let mut equipment = world
+                    .entity_mut(entity)
+                    .take::<EntityEquipment>()
+                    .unwrap_or_default();
+
+                let mut changes = std::collections::HashMap::new();
+                for (slot, item) in &slots {
+                    let old = equipment.get(*slot).clone();
+                    if &old == item {
+                        continue;
+                    }
+                    equipment.set(*slot, item.clone());
+                    changes.insert(
+                        *slot,
+                        crate::inventory::equipment_effects::EquipmentChange {
+                            old,
+                            new: item.clone(),
+                        },
+                    );
+                }
+
+                world.entity_mut(entity).insert(equipment);
+
+                // Only fire `EquipmentChangesEvent` for the local player. The
+                // observer in `equipment_effects` reads `WorldHolder` /
+                // `Attributes` / `LastEquipmentItems`, which only exist on the
+                // local player. Firing it for remote entities would trigger
+                // an `error!` log without doing useful work.
+                if entity == local_player && !changes.is_empty() {
+                    world.commands().trigger(
+                        crate::inventory::equipment_effects::EquipmentChangesEvent {
+                            entity,
+                            map: changes,
+                        },
+                    );
+                }
+            });
+        });
     }
 
     pub fn update_mob_effect(&mut self, p: &ClientboundUpdateMobEffect) {

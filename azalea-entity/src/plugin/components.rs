@@ -1,5 +1,6 @@
 use azalea_block::fluid_state::FluidKind;
 use azalea_core::position::{BlockPos, ChunkPos, Vec3};
+use azalea_inventory::{ItemStack, components::EquipmentSlot};
 use azalea_registry::builtin::EntityKind;
 use azalea_world::WorldName;
 use bevy_ecs::{bundle::Bundle, component::Component};
@@ -58,6 +59,33 @@ impl EntityBundle {
             on_climbable: OnClimbable(false),
             active_effects: ActiveEffects::default(),
         }
+    }
+}
+
+/// The equipment of a non-local entity, kept in sync from the
+/// `ClientboundSetEquipment` packet.
+///
+/// Indexed by [`EquipmentSlot`]. Slots that the server never sends are kept as
+/// [`ItemStack::Empty`]. The local player's equipment lives on
+/// [`crate::inventory::Inventory`] instead and is **not** mirrored here.
+#[derive(Component, Clone, Debug, Default)]
+pub struct EntityEquipment {
+    slots: [ItemStack; 8],
+}
+
+impl EntityEquipment {
+    pub fn get(&self, slot: EquipmentSlot) -> &ItemStack {
+        &self.slots[slot as usize]
+    }
+
+    pub fn set(&mut self, slot: EquipmentSlot, item: ItemStack) {
+        self.slots[slot as usize] = item;
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (EquipmentSlot, &ItemStack)> {
+        EquipmentSlot::values()
+            .into_iter()
+            .map(move |slot| (slot, &self.slots[slot as usize]))
     }
 }
 
