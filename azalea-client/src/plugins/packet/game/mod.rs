@@ -1696,7 +1696,19 @@ impl GamePacketHandler<'_> {
             }
         });
     }
-    pub fn set_player_inventory(&mut self, _p: &ClientboundSetPlayerInventory) {}
+    pub fn set_player_inventory(&mut self, p: &ClientboundSetPlayerInventory) {
+        debug!("Got set player inventory packet {p:?}");
+
+        as_system::<Query<&mut Inventory>>(self.ecs, |mut query| {
+            let mut inventory = query.get_mut(self.player).unwrap();
+            if !inventory.set_player_inventory_slot(p.slot, p.contents.clone()) {
+                debug!(
+                    "Got set_player_inventory for out-of-range slot {} (item {:?}); ignoring",
+                    p.slot, p.contents
+                );
+            }
+        });
+    }
     pub fn projectile_power(&mut self, _p: &ClientboundProjectilePower) {}
     pub fn custom_report_details(&mut self, _p: &ClientboundCustomReportDetails) {}
     pub fn server_links(&mut self, _p: &ClientboundServerLinks) {}

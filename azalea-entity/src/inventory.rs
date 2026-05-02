@@ -530,6 +530,73 @@ impl Inventory {
             .expect("The main hand item should always be present")
     }
 
+    /// Translate a vanilla player-inventory slot index (as used by
+    /// `ClientboundSetPlayerInventory` and vanilla
+    /// `net.minecraft.world.entity.player.Inventory#setItem`) to the
+    /// `Menu::Player` protocol index.
+    ///
+    /// Vanilla layout (see `Inventory#setItem` in MC 1.21.5+):
+    /// * `0..=8` — hotbar (left to right)
+    /// * `9..=35` — main inventory storage (top-left to bottom-right)
+    /// * `36..=39` — armor: 36 feet, 37 legs, 38 chest, 39 head
+    /// * `40` — offhand
+    ///
+    /// `Menu::Player` layout: `0` craft result, `1..=4` craft grid,
+    /// `5..=8` armor (head, chest, legs, feet), `9..=44` inventory
+    /// (`9..=35` storage, `36..=44` hotbar), `45` offhand.
+    ///
+    /// Returns `None` if the vanilla slot index is out of range.
+    pub fn player_inventory_slot_to_menu_protocol_index(slot: u32) -> Option<usize> {
+        match slot {
+            0..=8 => Some(*azalea_inventory::Player::HOTBAR_SLOTS.start() + slot as usize),
+            9..=35 => Some(slot as usize),
+            // 36 (feet) -> menu 8, 37 (legs) -> 7, 38 (chest) -> 6, 39 (head) -> 5
+            36..=39 => Some(*azalea_inventory::Player::ARMOR_SLOTS.end() - (slot as usize - 36)),
+            40 => Some(azalea_inventory::Player::OFFHAND_SLOT),
+            _ => None,
+        }
+    }
+
+    /// Apply a `ClientboundSetPlayerInventory`-style update: write the given
+    /// item into the player inventory at the given vanilla slot index. Updates
+    /// `inventory_menu`, and (for hotbar / storage slots) also mirrors into
+    /// the open `container_menu`'s player slots — vanilla aliases those slots
+    /// to the same `ItemStack` instances as `Inventory`.
+    ///
+    /// Returns `true` if the slot index was valid and the write happened.
+    pub fn set_player_inventory_slot(&mut self, slot: u32, item: ItemStack) -> bool {
+        let Some(menu_idx) = Self::player_inventory_slot_to_menu_protocol_index(slot) else {
+            return false;
+        };
+        let Some(target) = self.inventory_menu.slot_mut(menu_idx) else {
+            return false;
+        };
+        *target = item.clone();
+
+        // Mirror storage+hotbar (vanilla slot 0..=35) into the open container
+        // menu's player_slots_range. Armor (36..=39) and offhand (40) aren't
+        // visible in container UIs and aren't mirrored.
+        if slot <= 35
+            && let Some(container) = self.container_menu.as_mut()
+        {
+            let player_slots = container.player_slots_range();
+            // Vanilla `Inventory` lays out player_slots as
+            // `[storage(27) ++ hotbar(9)]` regardless of container kind, so
+            // the mapping from vanilla slot is direct.
+            let offset = if slot <= 8 {
+                // hotbar -> last 9 of player_slots
+                27 + slot as usize
+            } else {
+                // storage 9..=35 -> first 27 of player_slots
+                slot as usize - 9
+            };
+            if let Some(target) = container.slot_mut(*player_slots.start() + offset) {
+                *target = item;
+            }
+        }
+        true
+    }
+
     /// TODO: implement bundles
     fn try_item_click_behavior_override(
         &self,
@@ -685,6 +752,145 @@ mod tests {
     use azalea_registry::builtin::ItemKind;
 
     use super::*;
+
+    #[test]
+    fn test_player_inventory_slot_to_menu_protocol_index() {
+        // hotbar
+        for s in 0..=8 {
+            assert_eq!(
+                Inventory::player_inventory_slot_to_menu_protocol_index(s),
+                Some(36 + s as usize),
+                "hotbar slot {s}",
+            );
+        }
+        // storage
+        for s in 9..=35 {
+            assert_eq!(
+                Inventory::player_inventory_slot_to_menu_protocol_index(s),
+                Some(s as usize),
+                "storage slot {s}",
+            );
+        }
+        // armor: 36 feet -> 8, 37 legs -> 7, 38 chest -> 6, 39 head -> 5
+        assert_eq!(
+            Inventory::player_inventory_slot_to_menu_protocol_index(36),
+            Some(8),
+        );
+        assert_eq!(
+            Inventory::player_inventory_slot_to_menu_protocol_index(37),
+            Some(7),
+        );
+        assert_eq!(
+            Inventory::player_inventory_slot_to_menu_protocol_index(38),
+            Some(6),
+        );
+        assert_eq!(
+            Inventory::player_inventory_slot_to_menu_protocol_index(39),
+            Some(5),
+        );
+        // offhand
+        assert_eq!(
+            Inventory::player_inventory_slot_to_menu_protocol_index(40),
+            Some(45),
+        );
+        // out of range
+        assert_eq!(
+            Inventory::player_inventory_slot_to_menu_protocol_index(41),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_set_player_inventory_slot_writes_inventory_menu() {
+        let mut inventory = Inventory::default();
+        let stone = ItemStack::new(ItemKind::Stone, 1);
+
+        // hotbar slot 0 -> menu index 36
+        assert!(inventory.set_player_inventory_slot(0, stone.clone()));
+        assert_eq!(inventory.inventory_menu.slot(36), Some(&stone));
+
+        // storage slot 9 -> menu index 9
+        assert!(inventory.set_player_inventory_slot(9, stone.clone()));
+        assert_eq!(inventory.inventory_menu.slot(9), Some(&stone));
+
+        // armor slot 39 (head) -> menu index 5
+        assert!(inventory.set_player_inventory_slot(39, stone.clone()));
+        assert_eq!(inventory.inventory_menu.slot(5), Some(&stone));
+
+        // offhand slot 40 -> menu index 45
+        assert!(inventory.set_player_inventory_slot(40, stone.clone()));
+        assert_eq!(inventory.inventory_menu.slot(45), Some(&stone));
+
+        // out of range
+        assert!(!inventory.set_player_inventory_slot(41, stone));
+    }
+
+    #[test]
+    fn test_set_player_inventory_slot_mirrors_open_container() {
+        // simulate having a Generic9x3 container open on top of the player
+        // inventory; storage / hotbar writes should mirror into the container
+        // menu's player_slots_range, and armor / offhand writes shouldn't.
+        let mut inventory = Inventory {
+            inventory_menu: Menu::Player(azalea_inventory::Player::default()),
+            id: 1,
+            container_menu: Some(Menu::Generic9x3 {
+                contents: SlotList::default(),
+                player: SlotList::default(),
+            }),
+            container_menu_title: None,
+            carried: ItemStack::Empty,
+            state_id: 0,
+            quick_craft_status: QuickCraftStatusKind::Start,
+            quick_craft_kind: QuickCraftKind::Middle,
+            quick_craft_slots: HashSet::new(),
+            selected_hotbar_slot: 0,
+        };
+        let stone = ItemStack::new(ItemKind::Stone, 1);
+
+        // storage slot 9 (vanilla) -> player.inventory[0] (menu 9 in player
+        // menu); in Generic9x3 the player_slots_range starts after the 27
+        // chest contents, and the first 27 are storage.
+        assert!(inventory.set_player_inventory_slot(9, stone.clone()));
+        let container_player_start = *inventory
+            .container_menu
+            .as_ref()
+            .unwrap()
+            .player_slots_range()
+            .start();
+        assert_eq!(
+            inventory
+                .container_menu
+                .as_ref()
+                .unwrap()
+                .slot(container_player_start),
+            Some(&stone),
+        );
+        // and inventory_menu still got it
+        assert_eq!(inventory.inventory_menu.slot(9), Some(&stone));
+
+        // hotbar slot 0 (vanilla) -> last 9 of player_slots_range
+        let hotbar_iron = ItemStack::new(ItemKind::IronIngot, 5);
+        assert!(inventory.set_player_inventory_slot(0, hotbar_iron.clone()));
+        assert_eq!(
+            inventory
+                .container_menu
+                .as_ref()
+                .unwrap()
+                .slot(container_player_start + 27),
+            Some(&hotbar_iron),
+        );
+
+        // armor write doesn't touch the container menu
+        let helm = ItemStack::new(ItemKind::IronHelmet, 1);
+        assert!(inventory.set_player_inventory_slot(39, helm.clone()));
+        assert_eq!(inventory.inventory_menu.slot(5), Some(&helm));
+        // container menu has no armor mirror — its slot 5 is still chest
+        // contents (Empty since we set it that way).
+        assert_eq!(
+            inventory.container_menu.as_ref().unwrap().slot(5),
+            Some(&ItemStack::Empty),
+        );
+    }
 
     #[test]
     fn test_simulate_shift_click_in_crafting_table() {

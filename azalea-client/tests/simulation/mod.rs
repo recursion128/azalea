@@ -21,5 +21,6 @@ mod receive_spawn_entity_and_start_config_packet;
 mod receive_start_config_packet;
 mod reply_to_ping_with_pong;
 mod set_health_before_login;
+mod set_player_inventory;
 mod teleport_movement;
 mod ticks_alive;
