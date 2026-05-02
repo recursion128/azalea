@@ -9,8 +9,8 @@ use azalea_core::{
     position::{ChunkPos, Vec3},
 };
 use azalea_entity::{
-    Dead, EntityBundle, EntityEquipment, EntityKindComponent, HasClientLoaded, LoadedBy,
-    LocalEntity, LookDirection, Physics, PlayerAbilities, Position,
+    Dead, EntityBundle, EntityEquipment, EntityKindComponent, HasClientLoaded, Leashable,
+    LoadedBy, LocalEntity, LookDirection, Physics, PlayerAbilities, Position,
     effect_events::{AddEffectEvent, RemoveEffectsEvent},
     indexing::{EntityIdIndex, EntityUuidIndex},
     inventory::Inventory,
@@ -761,6 +761,28 @@ impl GamePacketHandler<'_> {
 
     pub fn set_entity_link(&mut self, p: &ClientboundSetEntityLink) {
         debug!("Got set entity link packet {p:?}");
+
+        as_system::<(Commands, Query<&EntityIdIndex>)>(self.ecs, |(mut commands, query)| {
+            let entity_id_index = query.get(self.player).unwrap();
+
+            let Some(entity) = entity_id_index.get_by_minecraft_entity(p.source_id) else {
+                debug!(
+                    "Got set entity link packet for unknown source entity id {}",
+                    p.source_id
+                );
+                return;
+            };
+
+            // vanilla sends `dest_id <= 0` (sometimes 0, sometimes -1
+            // depending on version) when the lead is detached.
+            let holder = if p.dest_id.0 > 0 {
+                Some(p.dest_id)
+            } else {
+                None
+            };
+
+            commands.entity(entity).insert(Leashable { holder });
+        });
     }
 
     pub fn initialize_border(&mut self, p: &ClientboundInitializeBorder) {

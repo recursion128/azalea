@@ -1,5 +1,8 @@
 use azalea_block::fluid_state::FluidKind;
-use azalea_core::position::{BlockPos, ChunkPos, Vec3};
+use azalea_core::{
+    entity_id::MinecraftEntityId,
+    position::{BlockPos, ChunkPos, Vec3},
+};
 use azalea_inventory::{ItemStack, components::EquipmentSlot};
 use azalea_registry::builtin::EntityKind;
 use azalea_world::WorldName;
@@ -87,6 +90,34 @@ impl EntityEquipment {
             .into_iter()
             .map(move |slot| (slot, &self.slots[slot as usize]))
     }
+}
+
+/// The leash holder of a mob, kept in sync from the
+/// `ClientboundSetEntityLink` packet.
+///
+/// `holder` is the [`MinecraftEntityId`] of whatever is currently holding the
+/// lead — usually a player, but it can also be a fence's
+/// `LeashFenceKnotEntity`. `None` means the mob is unleashed; vanilla
+/// signals detach with either `dest_id == 0` (modern) or `dest_id == -1`
+/// (older versions / fence-knot-removed path), and both are folded into
+/// `None` at the handler.
+///
+/// The component remains attached after detach (with `holder = None`); the
+/// presence of the component therefore means "we have ever received a
+/// `SetEntityLink` for this entity", not "is currently leashed". Consumers
+/// should match on `holder` rather than `With<Leashable>`.
+///
+/// We store the raw network entity id rather than an ECS [`Entity`] because
+/// the holder may not have been added to [`crate::indexing::EntityIdIndex`]
+/// yet at the time the link packet arrives (fence knot entities are spawned
+/// in the same server tick but cross-packet ordering is not guaranteed).
+/// Resolution to an ECS `Entity` is the consumer's responsibility — note
+/// that the id is per-client, so in a swarm setup the same `MinecraftEntityId`
+/// on different clients may map to different mobs; consumers that walk a
+/// shared world should resolve via the originating client's `EntityIdIndex`.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Leashable {
+    pub holder: Option<MinecraftEntityId>,
 }
 
 /// Marker component for entities that are dead.
