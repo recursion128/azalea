@@ -364,7 +364,23 @@ impl Inventory {
             }
             ClickOperation::Swap(s) => {
                 let source_slot_index = s.source_slot as usize;
-                let target_slot_index = s.target_slot as usize;
+                // `s.target_slot` is the *wire* button: 0..=8 = hotbar, 40 =
+                // offhand. It is **not** a menu protocol index. Translate it
+                // into the currently-active menu's protocol index. The
+                // exception is `40` (offhand) when a non-player container is
+                // open: vanilla still applies the swap via the raw player
+                // inventory, but the active menu has no slot for offhand —
+                // handle that directly against `inventory_menu` and bail out
+                // before the active-menu fallthrough.
+                if s.target_slot == 40 && !matches!(self.menu(), Menu::Player(_)) {
+                    self.simulate_swap_with_inventory_offhand(source_slot_index);
+                    return;
+                }
+                let Some(target_slot_index) =
+                    self.swap_button_to_menu_protocol_index(s.target_slot)
+                else {
+                    return;
+                };
 
                 let Some(source_slot) = self.menu().slot(source_slot_index) else {
                     return;
@@ -553,6 +569,66 @@ impl Inventory {
             // 36 (feet) -> menu 8, 37 (legs) -> 7, 38 (chest) -> 6, 39 (head) -> 5
             36..=39 => Some(*azalea_inventory::Player::ARMOR_SLOTS.end() - (slot as usize - 36)),
             40 => Some(azalea_inventory::Player::OFFHAND_SLOT),
+            _ => None,
+        }
+    }
+
+    /// Handle `SwapClick { target_slot: 40 }` (offhand) while a non-player
+    /// container is open. The active menu has no offhand slot — vanilla
+    /// applies the swap via the raw `Inventory#setItem(40, ...)` API, so we
+    /// mirror that by reading/writing `inventory_menu`'s offhand directly
+    /// while still updating the active container menu's source slot.
+    fn simulate_swap_with_inventory_offhand(&mut self, source_slot_index: usize) {
+        if self.menu().slot(source_slot_index).is_none() {
+            return;
+        }
+        let offhand_idx = azalea_inventory::Player::OFFHAND_SLOT;
+        let Some(offhand_item) = self.inventory_menu.slot(offhand_idx) else {
+            return;
+        };
+        let source_item = self.menu().slot(source_slot_index).unwrap().clone();
+        let offhand_item = offhand_item.clone();
+        if source_item.is_empty() && offhand_item.is_empty() {
+            return;
+        }
+        // simple swap — `may_pickup` / `may_place` / `max_stack_size` are
+        // permissive in this codebase (mirror of the existing swap branch's
+        // pre-existing behavior).
+        *self.menu_mut().slot_mut(source_slot_index).unwrap() = offhand_item;
+        *self.inventory_menu.slot_mut(offhand_idx).unwrap() = source_item;
+    }
+
+    /// Translate a vanilla swap-click button (0..=8 hotbar, 40 offhand) to
+    /// the currently-active menu's protocol index.
+    ///
+    /// Vanilla wire format for [`crate::ClickOperation::Swap`] reuses the
+    /// `button` field for the destination: number keys 1-9 → 0-8 (hotbar),
+    /// `F` → 40 (offhand). When the player has a container open the swap
+    /// target stays in player inventory, but the protocol index of those
+    /// slots depends on the active menu (e.g. `Generic9x3`'s hotbar starts at
+    /// `player_slots_range().start() + 27`).
+    ///
+    /// Returns `None` if `button` is not a valid swap target for the active
+    /// menu (e.g. `40`/offhand while a non-player container is open — vanilla
+    /// containers don't expose offhand, the server still applies it via raw
+    /// inventory write but the active menu has no slot to mirror).
+    fn swap_button_to_menu_protocol_index(&self, button: u8) -> Option<usize> {
+        match button {
+            0..=8 => {
+                // hotbar is the last 9 slots of the active menu's
+                // player_slots_range (vanilla `Inventory` lays out player_slots
+                // as `[storage(27) ++ hotbar(9)]`).
+                let hotbar = self.menu().hotbar_slots_range();
+                Some(*hotbar.start() + button as usize)
+            }
+            40 => {
+                // offhand only exists in `Menu::Player`
+                if matches!(self.menu(), Menu::Player(_)) {
+                    Some(azalea_inventory::Player::OFFHAND_SLOT)
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -924,6 +1000,199 @@ mod tests {
         assert_eq!(
             &new_slots[*Menu::CRAFTING_PLAYER_SLOTS.start()],
             &spruce_planks
+        );
+    }
+
+    /// Pressing number key `n` (1-9) in the player inventory while hovering
+    /// over a storage slot should swap the storage slot with hotbar slot
+    /// `n - 1` (vanilla wire button = `n - 1` ∈ 0..=8). The previous prediction
+    /// treated `button` as a menu protocol index and wrote the swap into the
+    /// wrong slot.
+    #[test]
+    fn test_simulate_swap_hotbar_button_in_player_menu() {
+        use azalea_inventory::operations::SwapClick;
+
+        // start with a stone in storage slot 9 (top-left of inventory storage)
+        // and an iron ingot in hotbar slot 0 (menu protocol index 36).
+        let stone = ItemStack::new(ItemKind::Stone, 1);
+        let iron = ItemStack::new(ItemKind::IronIngot, 5);
+
+        let mut player = azalea_inventory::Player::default();
+        player.inventory[0] = stone.clone();
+        player.inventory[27] = iron.clone();
+
+        let mut inventory = Inventory {
+            inventory_menu: Menu::Player(player),
+            ..Inventory::default()
+        };
+
+        // Press "1" while hovering storage slot 9 (menu index 9). Wire button
+        // is 0 → hotbar slot 0 → menu index 36.
+        inventory.simulate_click(
+            &ClickOperation::Swap(SwapClick {
+                source_slot: 9,
+                target_slot: 0,
+            }),
+            &PlayerAbilities::default(),
+        );
+
+        assert_eq!(
+            inventory.inventory_menu.slot(9),
+            Some(&iron),
+            "storage slot got the hotbar item",
+        );
+        assert_eq!(
+            inventory.inventory_menu.slot(36),
+            Some(&stone),
+            "hotbar slot got the storage item",
+        );
+    }
+
+    /// Press `F` while hovering a storage slot that holds the same item as
+    /// offhand — wire button = 40 → offhand (menu protocol index 45 in
+    /// `Menu::Player`). Uses the both-sides-present branch so we test the
+    /// button→protocol translation independently of the (pre-existing)
+    /// target-empty branch source-clear bug.
+    #[test]
+    fn test_simulate_swap_offhand_button_in_player_menu() {
+        use azalea_inventory::operations::SwapClick;
+
+        let stone = ItemStack::new(ItemKind::Stone, 1);
+        let iron = ItemStack::new(ItemKind::IronIngot, 5);
+        let mut player = azalea_inventory::Player::default();
+        player.inventory[0] = stone.clone();
+        player.offhand = iron.clone();
+
+        let mut inventory = Inventory {
+            inventory_menu: Menu::Player(player),
+            ..Inventory::default()
+        };
+
+        inventory.simulate_click(
+            &ClickOperation::Swap(SwapClick {
+                source_slot: 9,
+                target_slot: 40,
+            }),
+            &PlayerAbilities::default(),
+        );
+
+        // Both items swapped — proves button=40 mapped to menu index 45
+        // (offhand) and not to nothing / wrong slot.
+        assert_eq!(inventory.inventory_menu.slot(9), Some(&iron));
+        assert_eq!(inventory.inventory_menu.slot(45), Some(&stone));
+    }
+
+    /// Number-key swap inside an open container (e.g. `Generic9x3`) should
+    /// resolve to the container menu's own hotbar range, not raw protocol
+    /// index `0..=8` which lives inside chest contents.
+    #[test]
+    fn test_simulate_swap_hotbar_button_in_container_menu() {
+        use azalea_inventory::operations::SwapClick;
+
+        let stone = ItemStack::new(ItemKind::Stone, 1);
+        let iron = ItemStack::new(ItemKind::IronIngot, 5);
+
+        // Build a Generic9x3 menu with stone in chest slot 0 and iron in
+        // hotbar slot 0 (last 9 of player_slots: contents(27) + storage(27)
+        // ... hotbar(9)).
+        let mut chest = SlotList::default();
+        chest[0] = stone.clone();
+        let mut player_slots = SlotList::default();
+        // first 27 = storage, last 9 = hotbar
+        player_slots[27] = iron.clone();
+
+        let mut inventory = Inventory {
+            inventory_menu: Menu::Player(azalea_inventory::Player::default()),
+            id: 1,
+            container_menu: Some(Menu::Generic9x3 {
+                contents: chest,
+                player: player_slots,
+            }),
+            container_menu_title: None,
+            carried: ItemStack::Empty,
+            state_id: 0,
+            quick_craft_status: QuickCraftStatusKind::Start,
+            quick_craft_kind: QuickCraftKind::Middle,
+            quick_craft_slots: HashSet::new(),
+            selected_hotbar_slot: 0,
+        };
+
+        let menu_ref = inventory.container_menu.as_ref().unwrap();
+        let hotbar_start = *menu_ref.hotbar_slots_range().start();
+        // pre-condition sanity
+        assert_eq!(menu_ref.slot(0), Some(&stone));
+        assert_eq!(menu_ref.slot(hotbar_start), Some(&iron));
+
+        // Press "1" hovering chest slot 0. Wire button 0 should map to the
+        // container menu's hotbar slot 0 (= hotbar_start), NOT protocol
+        // index 0 (which is chest slot 0 — the source itself).
+        inventory.simulate_click(
+            &ClickOperation::Swap(SwapClick {
+                source_slot: 0,
+                target_slot: 0,
+            }),
+            &PlayerAbilities::default(),
+        );
+
+        let menu_ref = inventory.container_menu.as_ref().unwrap();
+        assert_eq!(menu_ref.slot(0), Some(&iron), "chest slot got hotbar item");
+        assert_eq!(
+            menu_ref.slot(hotbar_start),
+            Some(&stone),
+            "hotbar slot got chest item",
+        );
+    }
+
+    /// `F` swap (button = 40) inside an open non-player container should still
+    /// move items between the source slot and the player's offhand. Vanilla
+    /// applies it via the raw `Inventory#setItem(40, ...)`; locally we mirror
+    /// it through `inventory_menu`'s offhand because the container menu has
+    /// no offhand slot.
+    #[test]
+    fn test_simulate_swap_offhand_button_in_container_menu() {
+        use azalea_inventory::operations::SwapClick;
+
+        let stone = ItemStack::new(ItemKind::Stone, 1);
+        let iron = ItemStack::new(ItemKind::IronIngot, 5);
+
+        let mut chest = SlotList::default();
+        chest[0] = stone.clone();
+        let mut player = azalea_inventory::Player::default();
+        player.offhand = iron.clone();
+
+        let mut inventory = Inventory {
+            inventory_menu: Menu::Player(player),
+            id: 1,
+            container_menu: Some(Menu::Generic9x3 {
+                contents: chest,
+                player: SlotList::default(),
+            }),
+            container_menu_title: None,
+            carried: ItemStack::Empty,
+            state_id: 0,
+            quick_craft_status: QuickCraftStatusKind::Start,
+            quick_craft_kind: QuickCraftKind::Middle,
+            quick_craft_slots: HashSet::new(),
+            selected_hotbar_slot: 0,
+        };
+
+        inventory.simulate_click(
+            &ClickOperation::Swap(SwapClick {
+                source_slot: 0,
+                target_slot: 40,
+            }),
+            &PlayerAbilities::default(),
+        );
+
+        // chest slot now has iron (from offhand); inventory_menu offhand has
+        // stone (from chest).
+        assert_eq!(
+            inventory.container_menu.as_ref().unwrap().slot(0),
+            Some(&iron),
+        );
+        assert_eq!(
+            inventory.inventory_menu.slot(azalea_inventory::Player::OFFHAND_SLOT),
+            Some(&stone),
         );
     }
 }
