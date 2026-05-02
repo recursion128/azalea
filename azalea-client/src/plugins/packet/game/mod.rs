@@ -843,7 +843,7 @@ impl GamePacketHandler<'_> {
     }
 
     pub fn update_advancements(&mut self, p: &ClientboundUpdateAdvancements) {
-        debug!("Got update advancements packet {p:?}");
+        crate::plugins::advancements::apply_update_advancements(self.ecs, self.player, p);
     }
 
     pub fn rotate_head(&mut self, p: &ClientboundRotateHead) {
@@ -1341,7 +1341,9 @@ impl GamePacketHandler<'_> {
 
     pub fn move_vehicle(&mut self, _p: &ClientboundMoveVehicle) {}
 
-    pub fn open_book(&mut self, _p: &ClientboundOpenBook) {}
+    pub fn open_book(&mut self, p: &ClientboundOpenBook) {
+        crate::plugins::screen_open::apply_open_book(self.ecs, self.player, p);
+    }
 
     pub fn open_screen(&mut self, p: &ClientboundOpenScreen) {
         debug!("Got open screen packet {p:?}");
@@ -1356,7 +1358,9 @@ impl GamePacketHandler<'_> {
         });
     }
 
-    pub fn open_sign_editor(&mut self, _p: &ClientboundOpenSignEditor) {}
+    pub fn open_sign_editor(&mut self, p: &ClientboundOpenSignEditor) {
+        crate::plugins::screen_open::apply_open_sign_editor(self.ecs, self.player, p);
+    }
 
     pub fn ping(&mut self, p: &ClientboundPing) {
         debug!("Got ping packet {p:?}");

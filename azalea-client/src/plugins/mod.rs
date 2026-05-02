@@ -1,5 +1,6 @@
 use bevy_app::{PluginGroup, PluginGroupBuilder};
 
+pub mod advancements;
 pub mod attack;
 pub mod block_entity;
 pub mod block_event;
@@ -25,6 +26,7 @@ pub mod packet;
 pub mod pong;
 pub mod respawn;
 pub mod scoreboard;
+pub mod screen_open;
 pub mod task_pool;
 pub mod tick_counter;
 pub mod tick_end;
@@ -58,6 +60,8 @@ impl PluginGroup for DefaultPlugins {
             .add(block_update::BlockUpdatePlugin)
             .add(boss_bar::BossBarPlugin)
             .add(scoreboard::ScoreboardPlugin)
+            .add(advancements::AdvancementsPlugin)
+            .add(screen_open::ScreenOpenPlugin)
             .add(tick_end::TickEndPlugin)
             .add(loading::PlayerLoadedPlugin)
             .add(brand::BrandPlugin)
