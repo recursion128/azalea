@@ -97,9 +97,14 @@ impl Inventory {
         player_abilities: &PlayerAbilities,
     ) {
         if let ClickOperation::QuickCraft(quick_craft) = operation {
-            let last_quick_craft_status_tmp = self.quick_craft_status.clone();
-            self.quick_craft_status = last_quick_craft_status_tmp.clone();
-            let last_quick_craft_status = last_quick_craft_status_tmp;
+            let last_quick_craft_status = self.quick_craft_status.clone();
+            // mirror vanilla `AbstractContainerMenu#clicked`: the new status
+            // for this packet is whatever the packet says (Start / Add / End).
+            // The previous code preserved the old status here, which broke the
+            // state machine for Left / Right drag-distribute (Start was
+            // reset, so the following Add / End packets ran the guard against
+            // the wrong baseline and got reset too).
+            self.quick_craft_status = QuickCraftStatusKind::from(quick_craft.status.clone());
 
             // no carried item, reset
             if self.carried.is_empty() {
@@ -116,8 +121,16 @@ impl Inventory {
             }
             if self.quick_craft_status == QuickCraftStatusKind::Start {
                 self.quick_craft_kind = quick_craft.kind.clone();
-                if self.quick_craft_kind == QuickCraftKind::Middle && player_abilities.instant_break
-                {
+                // vanilla's `isValidQuickcraftType`: Left / Right are always
+                // valid; Middle only in creative (`instant_break`). On valid
+                // start we transition straight into `Add` so subsequent Add
+                // packets accumulate slots — matches vanilla's
+                // `quickcraftStatus = 1; quickcraftSlots.clear();`.
+                let is_valid = match self.quick_craft_kind {
+                    QuickCraftKind::Left | QuickCraftKind::Right => true,
+                    QuickCraftKind::Middle => player_abilities.instant_break,
+                };
+                if is_valid {
                     self.quick_craft_status = QuickCraftStatusKind::Add;
                     self.quick_craft_slots.clear();
                 } else {
@@ -133,9 +146,16 @@ impl Inventory {
                     // minecraft also checks slot.may_place(carried) and
                     // menu.can_drag_to(slot)
                     // but they always return true so they're not relevant for us
+                    //
+                    // vanilla `clicked` Add: `Middle (creative) ||
+                    // carried.count > slots.size()`. Both Left and Right gate
+                    // by carried-count; the previous code accidentally
+                    // exempted Right, which let the slot list grow past
+                    // `carried.count` and then End refused to distribute
+                    // (its per-iter guard requires `count >= slots.len()`).
                     if can_item_quick_replace(slot_item, &self.carried, true)
-                        && (self.quick_craft_kind == QuickCraftKind::Right
-                            || carried.count as usize > self.quick_craft_slots.len())
+                        && (self.quick_craft_kind == QuickCraftKind::Middle
+                            || (carried.count as usize) > self.quick_craft_slots.len())
                     {
                         self.quick_craft_slots.insert(slot);
                     }
@@ -146,7 +166,10 @@ impl Inventory {
                 if !self.quick_craft_slots.is_empty() {
                     if self.quick_craft_slots.len() == 1 {
                         // if we only clicked one slot, then turn this
-                        // QuickCraftClick into a PickupClick
+                        // QuickCraftClick into a PickupClick. Vanilla
+                        // converts Left-drag → PickupClick::Left (drop whole
+                        // stack) and Right-drag → PickupClick::Right (drop
+                        // a single item) for the single-slot case.
                         let slot = *self.quick_craft_slots.iter().next().unwrap();
                         self.reset_quick_craft();
                         self.simulate_click(
@@ -155,7 +178,7 @@ impl Inventory {
                                     PickupClick::Left { slot: Some(slot) }.into()
                                 }
                                 QuickCraftKind::Right => {
-                                    PickupClick::Left { slot: Some(slot) }.into()
+                                    PickupClick::Right { slot: Some(slot) }.into()
                                 }
                                 QuickCraftKind::Middle => {
                                     // idk just do nothing i guess
@@ -191,8 +214,11 @@ impl Inventory {
                             slot_index = next_slot;
                             item_stack = &self.carried;
 
-                            if slot.is_present()
-                                    && can_item_quick_replace(slot, item_stack, true)
+                            // vanilla checks `canItemQuickReplace` (which
+                            // accepts empty slots) + a per-kind count gate.
+                            // Empty target slots are valid drop targets for
+                            // left/right drag-distribute.
+                            if can_item_quick_replace(slot, item_stack, true)
                                     // this always returns true in most cases
                                     // && slot.may_place(item_stack)
                                     && (
@@ -204,14 +230,18 @@ impl Inventory {
                             }
                         }
 
-                        // get the ItemStackData for the slot
-                        let ItemStack::Present(slot) = slot else {
-                            unreachable!("the loop above requires the slot to be present to break")
-                        };
-
+                        // For the per-slot deposit we need the slot's existing
+                        // count + max_stack_size. If the slot is empty, treat
+                        // count as 0 and max_stack from the carried item's
+                        // kind only (mirrors vanilla `stack.isEmpty() ? 0 :
+                        // stack.getCount()` and `slot.getMaxStackSize(stack)`
+                        // — empty slot defers to the item's max).
                         // if self.can_drag_to(slot) {
                         let mut new_carried = carried.clone();
-                        let slot_item_count = slot.count;
+                        let (slot_item_count, slot_max_stack) = match slot {
+                            ItemStack::Present(slot) => (slot.count, slot.kind.max_stack_size()),
+                            ItemStack::Empty => (0, new_carried.kind.max_stack_size()),
+                        };
                         get_quick_craft_slot_count(
                             &self.quick_craft_slots,
                             &self.quick_craft_kind,
@@ -220,10 +250,7 @@ impl Inventory {
                         );
                         let max_stack_size = i32::min(
                             new_carried.kind.max_stack_size(),
-                            i32::min(
-                                new_carried.kind.max_stack_size(),
-                                slot.kind.max_stack_size(),
-                            ),
+                            i32::min(new_carried.kind.max_stack_size(), slot_max_stack),
                         );
                         if new_carried.count > max_stack_size {
                             new_carried.count = max_stack_size;
@@ -770,12 +797,17 @@ fn can_item_quick_replace(
     item: &ItemStack,
     ignore_item_count: bool,
 ) -> bool {
+    // vanilla `AbstractContainerMenu.canItemQuickReplace`: an empty target
+    // slot is *always* valid (return true). Only when the target slot is
+    // present does it check item-and-components match + max-stack-size. The
+    // previous version returned false on empty target, which broke
+    // QuickCraft Add / End for any slot the carried item didn't already
+    // occupy (vanilla left/right-button drag deposits into empty slots).
     let ItemStack::Present(target_slot) = target_slot else {
-        return false;
+        return true;
     };
     let ItemStack::Present(item) = item else {
-        // i *think* this is what vanilla does
-        // not 100% sure lol probably doesn't matter though
+        // a missing carried item can't be quick-replaced into anything.
         return false;
     };
 
@@ -1194,5 +1226,257 @@ mod tests {
             inventory.inventory_menu.slot(azalea_inventory::Player::OFFHAND_SLOT),
             Some(&stone),
         );
+    }
+
+    /// Helper: build a `Generic9x3` Inventory with `carried` set, ready for
+    /// QuickCraft drag tests.
+    fn quickcraft_test_inventory(carried: ItemStack) -> Inventory {
+        Inventory {
+            inventory_menu: Menu::Player(azalea_inventory::Player::default()),
+            id: 1,
+            container_menu: Some(Menu::Generic9x3 {
+                contents: SlotList::default(),
+                player: SlotList::default(),
+            }),
+            container_menu_title: None,
+            carried,
+            state_id: 0,
+            quick_craft_status: QuickCraftStatusKind::Start,
+            quick_craft_kind: QuickCraftKind::Middle,
+            quick_craft_slots: HashSet::new(),
+            selected_hotbar_slot: 0,
+        }
+    }
+
+    /// Vanilla Left-button drag (even split) onto N empty slots.
+    /// Previously the Start packet bailed out via `reset_quick_craft`, the
+    /// subsequent Add packets ran the guard against the wrong baseline and
+    /// got reset, so nothing accumulated. End would then never distribute.
+    #[test]
+    fn test_simulate_quick_craft_left_drag_even_split_empty_slots() {
+        use azalea_inventory::operations::{QuickCraftClick, QuickCraftKind, QuickCraftStatus};
+
+        let stone = ItemStack::new(ItemKind::Stone, 12);
+        let mut inventory = quickcraft_test_inventory(stone);
+        let abilities = PlayerAbilities::default();
+
+        // Start (Left)
+        inventory.simulate_click(
+            &ClickOperation::QuickCraft(QuickCraftClick {
+                kind: QuickCraftKind::Left,
+                status: QuickCraftStatus::Start,
+            }),
+            &abilities,
+        );
+        assert_eq!(inventory.quick_craft_status, QuickCraftStatusKind::Add);
+        assert_eq!(inventory.quick_craft_kind, QuickCraftKind::Left);
+        assert!(inventory.quick_craft_slots.is_empty());
+
+        // Add 3 chest slots (0, 1, 2)
+        for s in 0..3u16 {
+            inventory.simulate_click(
+                &ClickOperation::QuickCraft(QuickCraftClick {
+                    kind: QuickCraftKind::Left,
+                    status: QuickCraftStatus::Add { slot: s },
+                }),
+                &abilities,
+            );
+        }
+        assert_eq!(inventory.quick_craft_slots.len(), 3, "Add accumulated 3 slots");
+
+        // End — Left = even split: 12 / 3 = 4 each
+        inventory.simulate_click(
+            &ClickOperation::QuickCraft(QuickCraftClick {
+                kind: QuickCraftKind::Left,
+                status: QuickCraftStatus::End,
+            }),
+            &abilities,
+        );
+
+        let menu = inventory.container_menu.as_ref().unwrap();
+        for s in 0..3u16 {
+            let slot = menu.slot(s as usize).unwrap();
+            assert_eq!(
+                slot.count(),
+                4,
+                "slot {s} got 4 stone (12 / 3 even split), got {slot:?}"
+            );
+        }
+        // carried has 12 - 3*4 = 0 left
+        assert_eq!(inventory.carried.count(), 0);
+        // state machine reset for the next click
+        assert_eq!(inventory.quick_craft_status, QuickCraftStatusKind::Start);
+        assert!(inventory.quick_craft_slots.is_empty());
+    }
+
+    /// Right-button drag (1 per slot) onto N empty slots.
+    #[test]
+    fn test_simulate_quick_craft_right_drag_one_each_empty_slots() {
+        use azalea_inventory::operations::{QuickCraftClick, QuickCraftKind, QuickCraftStatus};
+
+        let stone = ItemStack::new(ItemKind::Stone, 5);
+        let mut inventory = quickcraft_test_inventory(stone);
+        let abilities = PlayerAbilities::default();
+
+        inventory.simulate_click(
+            &ClickOperation::QuickCraft(QuickCraftClick {
+                kind: QuickCraftKind::Right,
+                status: QuickCraftStatus::Start,
+            }),
+            &abilities,
+        );
+        assert_eq!(inventory.quick_craft_status, QuickCraftStatusKind::Add);
+
+        for s in 0..3u16 {
+            inventory.simulate_click(
+                &ClickOperation::QuickCraft(QuickCraftClick {
+                    kind: QuickCraftKind::Right,
+                    status: QuickCraftStatus::Add { slot: s },
+                }),
+                &abilities,
+            );
+        }
+        // Right kind allows count <= slots.len() — all 3 should accumulate
+        // even though carried.count (5) > slots.len() (3) which Left would
+        // also accept.
+        assert_eq!(inventory.quick_craft_slots.len(), 3);
+
+        inventory.simulate_click(
+            &ClickOperation::QuickCraft(QuickCraftClick {
+                kind: QuickCraftKind::Right,
+                status: QuickCraftStatus::End,
+            }),
+            &abilities,
+        );
+
+        let menu = inventory.container_menu.as_ref().unwrap();
+        for s in 0..3u16 {
+            let slot = menu.slot(s as usize).unwrap();
+            assert_eq!(slot.count(), 1, "slot {s} got 1 stone");
+        }
+        // carried = 5 - 3 = 2
+        assert_eq!(inventory.carried.count(), 2);
+    }
+
+    /// Middle-button drag is creative-only (`instant_break`). Without it the
+    /// Start packet should reset and nothing accumulates.
+    #[test]
+    fn test_simulate_quick_craft_middle_drag_requires_instant_break() {
+        use azalea_inventory::operations::{QuickCraftClick, QuickCraftKind, QuickCraftStatus};
+
+        let stone = ItemStack::new(ItemKind::Stone, 1);
+        let mut inventory = quickcraft_test_inventory(stone.clone());
+        let mut survival = PlayerAbilities::default();
+        survival.instant_break = false;
+
+        inventory.simulate_click(
+            &ClickOperation::QuickCraft(QuickCraftClick {
+                kind: QuickCraftKind::Middle,
+                status: QuickCraftStatus::Start,
+            }),
+            &survival,
+        );
+        // resets — back to Start, slots cleared
+        assert_eq!(inventory.quick_craft_status, QuickCraftStatusKind::Start);
+
+        // Now repeat with creative — should enter Add.
+        let mut creative_inv = quickcraft_test_inventory(stone);
+        let mut creative = PlayerAbilities::default();
+        creative.instant_break = true;
+        creative_inv.simulate_click(
+            &ClickOperation::QuickCraft(QuickCraftClick {
+                kind: QuickCraftKind::Middle,
+                status: QuickCraftStatus::Start,
+            }),
+            &creative,
+        );
+        assert_eq!(creative_inv.quick_craft_status, QuickCraftStatusKind::Add);
+        assert_eq!(creative_inv.quick_craft_kind, QuickCraftKind::Middle);
+    }
+
+    /// Single-slot right drag is converted into a `PickupClick::Right`
+    /// (deposit 1 item) — not `PickupClick::Left` (deposit whole stack).
+    #[test]
+    fn test_simulate_quick_craft_right_drag_single_slot_drops_one() {
+        use azalea_inventory::operations::{QuickCraftClick, QuickCraftKind, QuickCraftStatus};
+
+        let stone = ItemStack::new(ItemKind::Stone, 5);
+        let mut inventory = quickcraft_test_inventory(stone);
+        let abilities = PlayerAbilities::default();
+
+        inventory.simulate_click(
+            &ClickOperation::QuickCraft(QuickCraftClick {
+                kind: QuickCraftKind::Right,
+                status: QuickCraftStatus::Start,
+            }),
+            &abilities,
+        );
+        inventory.simulate_click(
+            &ClickOperation::QuickCraft(QuickCraftClick {
+                kind: QuickCraftKind::Right,
+                status: QuickCraftStatus::Add { slot: 0 },
+            }),
+            &abilities,
+        );
+        inventory.simulate_click(
+            &ClickOperation::QuickCraft(QuickCraftClick {
+                kind: QuickCraftKind::Right,
+                status: QuickCraftStatus::End,
+            }),
+            &abilities,
+        );
+
+        // Only 1 stone should have been placed; carried 5 - 1 = 4 left.
+        let menu = inventory.container_menu.as_ref().unwrap();
+        assert_eq!(menu.slot(0).unwrap().count(), 1, "single-slot right drag drops 1 item");
+        assert_eq!(inventory.carried.count(), 4);
+    }
+
+    /// Right-drag with carried.count < slots.size() should refuse to
+    /// accumulate more slots than can hold one item each (vanilla guards
+    /// `Middle || carried.count > slots.size()` for both Left and Right).
+    #[test]
+    fn test_simulate_quick_craft_right_drag_caps_slots_by_carried_count() {
+        use azalea_inventory::operations::{QuickCraftClick, QuickCraftKind, QuickCraftStatus};
+
+        let stone = ItemStack::new(ItemKind::Stone, 2);
+        let mut inventory = quickcraft_test_inventory(stone);
+        let abilities = PlayerAbilities::default();
+
+        inventory.simulate_click(
+            &ClickOperation::QuickCraft(QuickCraftClick {
+                kind: QuickCraftKind::Right,
+                status: QuickCraftStatus::Start,
+            }),
+            &abilities,
+        );
+        for s in 0..3u16 {
+            inventory.simulate_click(
+                &ClickOperation::QuickCraft(QuickCraftClick {
+                    kind: QuickCraftKind::Right,
+                    status: QuickCraftStatus::Add { slot: s },
+                }),
+                &abilities,
+            );
+        }
+        // carried.count = 2, so the Add gate `carried.count > slots.size()`
+        // accepts the first 2 slots and rejects the third.
+        assert_eq!(inventory.quick_craft_slots.len(), 2);
+    }
+
+    /// `can_item_quick_replace` should accept empty target slots (vanilla
+    /// behavior) — used by QuickCraft Add / End and PickupAll. Vanilla
+    /// short-circuits to `true` for empty slot regardless of `stack`.
+    #[test]
+    fn test_can_item_quick_replace_empty_target() {
+        let stone = ItemStack::new(ItemKind::Stone, 1);
+        assert!(can_item_quick_replace(&ItemStack::Empty, &stone, true));
+        assert!(can_item_quick_replace(&ItemStack::Empty, &stone, false));
+        // present source + present target with stackable same-item: ok
+        let stone2 = ItemStack::new(ItemKind::Stone, 5);
+        assert!(can_item_quick_replace(&stone2, &stone, true));
+        // present source + present target with mismatched kind: rejected
+        let iron = ItemStack::new(ItemKind::IronIngot, 1);
+        assert!(!can_item_quick_replace(&stone2, &iron, true));
     }
 }
