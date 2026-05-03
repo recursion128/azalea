@@ -145,6 +145,12 @@ impl From<&Position> for BlockPos {
 
 /// The direction that an entity is looking, in degrees.
 ///
+/// 对于 mob，`y_rot` 是 **head yaw**（脑袋朝向），不是 body yaw；vanilla 协议在
+/// `ClientboundRotateHead` / `ClientboundAddEntity::y_head_rot` / 玩家自己的视角
+/// 包里都用这一个值。**body yaw**（躯干朝向）单独走 [`BodyYaw`] 组件，由
+/// `MoveEntityRot` / `MoveEntityPosRot` / `TeleportEntity` / `AddEntity::y_rot` 写入。
+/// 本仓库的 client 只做忠实回放，不实现 vanilla server-tick 的 body↔head ±75° lerp。
+///
 /// To avoid flagging anticheats, consider using [`Self::update`] when updating
 /// the values of this struct.
 #[cfg_attr(feature = "bevy_ecs", derive(bevy_ecs::component::Component))]
@@ -155,6 +161,13 @@ pub struct LookDirection {
     /// Up and down. AKA pitch. In degrees.
     x_rot: f32,
 }
+
+/// 实体躯干朝向（body yaw, 度）。
+///
+/// 与 [`LookDirection::y_rot`]（head yaw）拆开存储 —— 见 [`LookDirection`] 顶部说明。
+#[cfg_attr(feature = "bevy_ecs", derive(bevy_ecs::component::Component))]
+#[derive(AzBuf, Clone, Copy, Debug, Default, PartialEq)]
+pub struct BodyYaw(pub f32);
 
 impl LookDirection {
     /// Create a new look direction and clamp the `x_rot` to the allowed values.

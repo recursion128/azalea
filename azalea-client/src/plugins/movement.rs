@@ -5,8 +5,8 @@ use azalea_core::{
     tick::GameTick,
 };
 use azalea_entity::{
-    Attributes, Crouching, HasClientLoaded, Jumping, LastSentPosition, LocalEntity, LookDirection,
-    Physics, PlayerAbilities, Pose, Position,
+    Attributes, BodyYaw, Crouching, HasClientLoaded, Jumping, LastSentPosition, LocalEntity,
+    LookDirection, Physics, PlayerAbilities, Pose, Position, clamp_look_direction,
     dimensions::calculate_dimensions,
     metadata::{self, Sprinting},
     update_bounding_box,
@@ -54,6 +54,7 @@ impl Plugin for MovementPlugin {
                     .after(update_bounding_box)
                     .after(update_last_bounding_box),
             )
+            .add_systems(Update, sync_local_body_yaw.after(clamp_look_direction))
             .add_systems(
                 GameTick,
                 (
@@ -83,6 +84,18 @@ pub struct MoveEventsSystems;
 pub struct LastSentLookDirection {
     pub x_rot: f32,
     pub y_rot: f32,
+}
+
+/// 本地玩家转头时身体跟着转 —— vanilla 的 player 视角 = head 方向，body yaw 始终
+/// 等于 head yaw（不存在 mob 那种 ±75° lerp）。
+pub fn sync_local_body_yaw(
+    mut query: Query<(&LookDirection, &mut BodyYaw), With<LocalEntity>>,
+) {
+    for (look, mut body_yaw) in &mut query {
+        if body_yaw.0 != look.y_rot() {
+            body_yaw.0 = look.y_rot();
+        }
+    }
 }
 
 #[allow(clippy::type_complexity)]

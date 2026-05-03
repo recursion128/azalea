@@ -9,7 +9,7 @@ use azalea_core::{
     position::{ChunkPos, Vec3},
 };
 use azalea_entity::{
-    Dead, EntityBundle, EntityEquipment, EntityKindComponent, HasClientLoaded, Leashable,
+    BodyYaw, Dead, EntityBundle, EntityEquipment, EntityKindComponent, HasClientLoaded, Leashable,
     LoadedBy, LocalEntity, LookDirection, Physics, PlayerAbilities, Position, ProjectileOwner,
     effect_events::{AddEffectEvent, RemoveEffectsEvent},
     indexing::{EntityIdIndex, EntityUuidIndex},
@@ -873,17 +873,36 @@ impl GamePacketHandler<'_> {
                     move |entity| {
                         let entity_id = entity.id();
                         entity.world_scope(move |world| {
-                            let mut query =
-                                world.query::<(&mut Physics, &mut LookDirection, &mut Position)>();
-                            let (mut physics, mut look_direction, mut position) =
+                            let mut query = world.query::<(
+                                &mut Physics,
+                                &mut LookDirection,
+                                &mut Position,
+                                Option<&mut BodyYaw>,
+                            )>();
+                            let (mut physics, mut look_direction, mut position, body_yaw) =
                                 query.get_mut(world, entity_id).unwrap();
                             let old_position = *position;
+                            // ClientboundTeleportEntity.change.look_direction 的 y_rot
+                            // 实际是 body yaw（vanilla teleport 包不带 head yaw）。
+                            // RelativeMovements::apply 把 yaw 写到 LookDirection，
+                            // 这里跑完后再把更新后的 y_rot 搬到 BodyYaw、还原 head yaw。
+                            let head_yaw_before = look_direction.y_rot();
                             relative.apply(
                                 &change,
                                 &mut position,
                                 &mut look_direction,
                                 &mut physics,
                             );
+                            let new_body_yaw = look_direction.y_rot();
+                            if look_direction.y_rot() != head_yaw_before {
+                                *look_direction =
+                                    LookDirection::new(head_yaw_before, look_direction.x_rot());
+                            }
+                            if let Some(mut body_yaw) = body_yaw
+                                && body_yaw.0 != new_body_yaw
+                            {
+                                body_yaw.0 = new_body_yaw;
+                            }
                             // old_pos is set to the current position when we're teleported
                             physics.set_old_pos(old_position);
                         });
@@ -916,8 +935,6 @@ impl GamePacketHandler<'_> {
                     );
                     return;
                 };
-                // azalea's `LookDirection` doesn't yet split body / head yaw,
-                // so we just write head_yaw to y_rot (and leave x_rot alone).
                 let new_y_rot = (p.y_head_rot as i32 * 360) as f32 / 256.;
                 let new_look = LookDirection::new(new_y_rot, look_direction.x_rot());
                 if new_look != *look_direction {
@@ -1824,8 +1841,16 @@ struct MoveEntity {
     pub on_ground: bool,
 }
 
-type MoveEntityQuery<'world, 'state, 'a> =
-    Query<'world, 'state, (&'a mut Physics, &'a mut Position, &'a mut LookDirection)>;
+type MoveEntityQuery<'world, 'state, 'a> = Query<
+    'world,
+    'state,
+    (
+        &'a mut Physics,
+        &'a mut Position,
+        &'a mut LookDirection,
+        Option<&'a mut BodyYaw>,
+    ),
+>;
 
 fn move_entity(
     player_entity: Entity,
@@ -1846,7 +1871,9 @@ fn move_entity(
         return;
     };
 
-    let Ok((mut physics, mut position, mut look_direction)) = entity_query.get_mut(entity) else {
+    let Ok((mut physics, mut position, mut look_direction, body_yaw)) =
+        entity_query.get_mut(entity)
+    else {
         debug!("Got move entity packet for entity with missing components {entity_id}");
         return;
     };
@@ -1869,10 +1896,20 @@ fn move_entity(
         }
     }
 
+    // ClientboundMoveEntityRot / MoveEntityPosRot 的 `look_direction` 字段实际是
+    // body yaw + pitch（vanilla 协议名 y_rot / x_rot）—— head yaw 走独立的
+    // ClientboundRotateHead，所以这里只动 BodyYaw 和 LookDirection 的 pitch，
+    // 不覆盖 head yaw（LookDirection.y_rot）。
     if let Some(new_look_direction) = p.look_direction {
-        let new_look_direction = new_look_direction.into();
-        if new_look_direction != *look_direction {
-            *look_direction = new_look_direction;
+        let new_pitch = (new_look_direction.x_rot as i32 * 360) as f32 / 256.;
+        if new_pitch != look_direction.x_rot() {
+            *look_direction = LookDirection::new(look_direction.y_rot(), new_pitch);
+        }
+        let new_body_yaw = (new_look_direction.y_rot as i32 * 360) as f32 / 256.;
+        if let Some(mut body_yaw) = body_yaw
+            && body_yaw.0 != new_body_yaw
+        {
+            body_yaw.0 = new_body_yaw;
         }
     }
 

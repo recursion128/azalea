@@ -33,12 +33,8 @@ pub struct ClientboundAddEntity {
 impl ClientboundAddEntity {
     /// Make the entity into a bundle that can be inserted into the ECS.
     ///
-    /// The packet's `y_head_rot` / `x_rot` seeds the entity's initial
-    /// [`azalea_entity::LookDirection`] — head yaw goes to `y_rot` and the
-    /// pitch goes to `x_rot`. The packet also carries a separate body
-    /// `y_rot`, but azalea's `LookDirection` does not yet split body / head
-    /// yaw, so it's currently ignored (head yaw matches what
-    /// `ClientboundRotateHead` would later overwrite anyway).
+    /// 三个朝向字节分别落到不同组件：head yaw + pitch 写 [`azalea_entity::LookDirection`]
+    /// （head 方向也是 player 视角方向），body yaw 写 [`azalea_entity::BodyYaw`]。
     ///
     /// You must apply the metadata after inserting the bundle with
     /// [`Self::apply_metadata`].
@@ -48,9 +44,11 @@ impl ClientboundAddEntity {
             (self.y_head_rot as i32 * 360) as f32 / 256.,
             (self.x_rot as i32 * 360) as f32 / 256.,
         );
+        let body_yaw = (self.y_rot as i32 * 360) as f32 / 256.;
         let mut bundle =
             azalea_entity::EntityBundle::new(self.uuid, self.position, self.entity_type, world_name);
         bundle.direction = look;
+        bundle.body_yaw = azalea_entity::BodyYaw(body_yaw);
         bundle
     }
 

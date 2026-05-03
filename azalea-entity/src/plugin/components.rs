@@ -11,7 +11,7 @@ use derive_more::{Deref, DerefMut};
 use uuid::Uuid;
 
 use crate::{
-    ActiveEffects, Attributes, EntityUuid, FluidOnEyes, LookDirection, Physics, Position,
+    ActiveEffects, Attributes, BodyYaw, EntityUuid, FluidOnEyes, LookDirection, Physics, Position,
     dimensions::EntityDimensions, indexing::EntityChunkPos,
 };
 
@@ -30,6 +30,7 @@ pub struct EntityBundle {
 
     pub physics: Physics,
     pub direction: LookDirection,
+    pub body_yaw: BodyYaw,
     pub dimensions: EntityDimensions,
     pub attributes: Attributes,
     pub jumping: Jumping,
@@ -53,6 +54,7 @@ impl EntityBundle {
             physics: Physics::new(&dimensions, pos),
             dimensions,
             direction: LookDirection::default(),
+            body_yaw: BodyYaw::default(),
 
             attributes: Attributes::new(EntityKind::Player),
 
