@@ -10,8 +10,8 @@ use azalea_protocol::{
     packets::{
         ConnectionProtocol,
         game::{
-            ClientboundAddEntity, ClientboundMoveEntityPosRot, ClientboundMoveEntityRot,
-            ClientboundRotateHead, ClientboundTeleportEntity,
+            ClientboundAddEntity, ClientboundEntityPositionSync, ClientboundMoveEntityPosRot,
+            ClientboundMoveEntityRot, ClientboundRotateHead, ClientboundTeleportEntity,
             c_move_entity_pos_rot::CompactLookDirection,
         },
     },
@@ -180,6 +180,36 @@ fn test_body_yaw_head_yaw_split() {
     assert!(
         (body.0 - (-90.0)).abs() < 1e-3,
         "TeleportEntity 应把 yaw 写入 BodyYaw, got {}",
+        body.0
+    );
+
+    // EntityPositionSync：vanilla 同样给 body yaw + pitch（不动 head yaw）
+    s.receive_packet(ClientboundEntityPositionSync {
+        id: MinecraftEntityId(123),
+        values: PositionMoveRotation {
+            pos: Vec3::new(0.5, 64., 0.5),
+            delta: Vec3::ZERO,
+            look_direction: LookDirection::new(120.0, -30.0),
+        },
+        on_ground: true,
+    });
+    s.tick();
+
+    let look = *s.app.world().entity(cow).get::<LookDirection>().unwrap();
+    let body = *s.app.world().entity(cow).get::<BodyYaw>().unwrap();
+    assert!(
+        (look.y_rot() - 45.0).abs() < 1e-3,
+        "EntityPositionSync 不应动 LookDirection.y_rot, got {}",
+        look.y_rot()
+    );
+    assert!(
+        (look.x_rot() - (-30.0)).abs() < 1e-3,
+        "EntityPositionSync 应改 pitch, got {}",
+        look.x_rot()
+    );
+    assert!(
+        (body.0 - 120.0).abs() < 1e-3,
+        "EntityPositionSync 应改 BodyYaw, got {}",
         body.0
     );
 }

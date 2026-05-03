@@ -1653,6 +1653,7 @@ impl GamePacketHandler<'_> {
                 &mut Physics,
                 &mut Position,
                 &mut LookDirection,
+                Option<&mut BodyYaw>,
                 Option<&LocalEntity>,
             )>,
             EntityUpdateQuery,
@@ -1679,7 +1680,7 @@ impl GamePacketHandler<'_> {
                     return;
                 }
 
-                let Ok((mut physics, mut position, mut look_direction, local_entity)) =
+                let Ok((mut physics, mut position, mut look_direction, body_yaw, local_entity)) =
                     entity_query.get_mut(entity)
                 else {
                     return;
@@ -1699,8 +1700,18 @@ impl GamePacketHandler<'_> {
                     **position = new_position;
                 }
 
-                if *look_direction != new_look_direction {
-                    *look_direction = new_look_direction;
+                // ClientboundEntityPositionSync.values.look_direction 的 y_rot 是
+                // body yaw（vanilla 不带 head yaw），pitch 写 LookDirection.x_rot，
+                // body yaw 写 BodyYaw，head yaw（LookDirection.y_rot）保持不变。
+                let new_pitch = new_look_direction.x_rot();
+                if look_direction.x_rot() != new_pitch {
+                    *look_direction = LookDirection::new(look_direction.y_rot(), new_pitch);
+                }
+                let new_body_yaw = new_look_direction.y_rot();
+                if let Some(mut body_yaw) = body_yaw
+                    && body_yaw.0 != new_body_yaw
+                {
+                    body_yaw.0 = new_body_yaw;
                 }
             },
         );
